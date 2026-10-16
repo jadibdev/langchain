@@ -466,36 +466,27 @@ def test_trim_messages_last_allow_partial_one_message() -> None:
 
 def test_trim_messages_last_allow_partial_respects_token_budget_order() -> None:
     # Verifies candidate splits are evaluated in forward order so tokenizers with
-    # order-dependent token counts (e.g. BPE token fusion when trailing lines lack newlines)
+    # order-dependent token counts (e.g. subword/BPE boundary fusion across unpunctuated lines)
     # never return a message that exceeds max_tokens.
-    def order_sensitive_counter(msgs: list[BaseMessage]) -> int:
-        total = 0
-        for msg in msgs:
-            text = msg.content if isinstance(msg.content, str) else ""
-            if "gf\n" in text:
-                total += 4
-            elif "f\ng" in text:
-                total += 6
-            elif "g" in text:
-                total += 3
-            elif "f\n" in text:
-                total += 3
-            else:
-                total += len(text.splitlines()) * 3
-        return total
+    def word_and_newline_counter(msgs: list[BaseMessage]) -> int:
+        # Order-sensitive like BPE: reversed "cb\n" fuses into ["cb", "\n"] (2 tokens + 3 overhead = 5),
+        # whereas forward "b\nc" tokenizes as ["b", "\n", "c"] (3 tokens + 3 overhead = 6).
+        return sum(
+            3 + len(re.findall(r"\w+|\n", m.content if isinstance(m.content, str) else ""))
+            for m in msgs
+        )
 
-    text = "d\ne\nf\ng"
+    text = "a\nb\nc"
     actual = trim_messages(
         [HumanMessage(text)],
         max_tokens=5,
-        token_counter=order_sensitive_counter,
+        token_counter=word_and_newline_counter,
         strategy="last",
         allow_partial=True,
-        text_splitter=lambda t: t.splitlines(keepends=True),
     )
     assert len(actual) == 1
-    assert actual[0].content == "g"
-    assert order_sensitive_counter(actual) <= 5
+    assert actual[0].content == "c"
+    assert word_and_newline_counter(actual) <= 5
 
 
 def test_trim_messages_last_allow_partial_blocks_respects_token_budget_order() -> None:
@@ -505,20 +496,21 @@ def test_trim_messages_last_allow_partial_blocks_respects_token_budget_order() -
         for msg in msgs:
             if isinstance(msg.content, list):
                 combined = "".join(
-                    b["text"] for b in msg.content if isinstance(b, dict) and "text" in b
+                    b["text"]
+                    for b in msg.content
+                    if isinstance(b, dict) and "text" in b
                 )
-                if combined == "b2b1":
-                    total += 4
-                elif combined == "b1b2":
-                    total += 6
-                elif combined == "b2":
-                    total += 3
-                else:
-                    total += len(msg.content) * 3
+                total += 3 + len(re.findall(r"\w+|\n", combined))
         return total
 
+    # 3 blocks ensure k=2 evaluates candidate blocks in reverse order under pre-fix logic:
+    # reversed ["c", "b\n"] -> "cb\n" costs 5 <= 5, returned forward ["b\n", "c"] -> "b\nc" costs 6 > 5.
     msg = HumanMessage(
-        content=[{"type": "text", "text": "b1"}, {"type": "text", "text": "b2"}]
+        content=[
+            {"type": "text", "text": "a\n"},
+            {"type": "text", "text": "b\n"},
+            {"type": "text", "text": "c"},
+        ]
     )
     actual = trim_messages(
         [msg],
@@ -528,7 +520,7 @@ def test_trim_messages_last_allow_partial_blocks_respects_token_budget_order() -
         allow_partial=True,
     )
     assert len(actual) == 1
-    assert actual[0].content == [{"type": "text", "text": "b2"}]
+    assert actual[0].content == [{"type": "text", "text": "c"}]
     assert block_counter(actual) <= 5
 
 

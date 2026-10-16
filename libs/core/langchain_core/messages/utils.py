@@ -2026,14 +2026,14 @@ def _first_max_tokens(
         if isinstance(messages[idx].content, list):
             excluded = messages[idx].model_copy(deep=True)
             copied = True
-            num_block = len(excluded.content)
+            original_blocks = list(excluded.content)
+            num_block = len(original_blocks)
             for k in range(num_block - 1, 0, -1):
-                candidate_blocks = (
-                    excluded.content[-k:]
+                excluded.content = (
+                    original_blocks[-k:]
                     if partial_strategy == "last"
-                    else excluded.content[:k]
+                    else original_blocks[:k]
                 )
-                excluded.content = candidate_blocks
                 if token_counter([*messages[:idx], excluded]) <= max_tokens:
                     messages = [*messages[:idx], excluded]
                     idx += 1
