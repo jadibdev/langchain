@@ -464,6 +464,72 @@ def test_trim_messages_last_allow_partial_one_message() -> None:
     assert _MESSAGES_TO_TRIM == _MESSAGES_TO_TRIM_COPY
 
 
+def test_trim_messages_last_allow_partial_respects_token_budget_order() -> None:
+    # Verifies candidate splits are evaluated in forward order so tokenizers
+    # with order-dependent token counts (e.g. subword/BPE boundary fusion across
+    # unpunctuated lines) never return a message that exceeds max_tokens.
+    def word_and_newline_counter(msgs: list[BaseMessage]) -> int:
+        # Order-sensitive like BPE: reversed "cb\n" fuses into ["cb", "\n"]
+        # (2 tokens + 3 overhead = 5), whereas forward "b\nc" tokenizes as
+        # ["b", "\n", "c"] (3 tokens + 3 overhead = 6).
+        return sum(
+            3
+            + len(
+                re.findall(r"\w+|\n", m.content if isinstance(m.content, str) else "")
+            )
+            for m in msgs
+        )
+
+    text = "a\nb\nc"
+    actual = trim_messages(
+        [HumanMessage(text)],
+        max_tokens=5,
+        token_counter=word_and_newline_counter,
+        strategy="last",
+        allow_partial=True,
+    )
+    assert len(actual) == 1
+    assert actual[0].content == "c"
+    assert word_and_newline_counter(actual) <= 5
+
+
+def test_trim_messages_last_allow_partial_blocks_respects_token_budget_order() -> None:
+    # Verifies candidate content blocks are evaluated in forward order when
+    # partial_strategy="last"
+    def block_counter(msgs: list[BaseMessage]) -> int:
+        total = 0
+        for msg in msgs:
+            if isinstance(msg.content, list):
+                combined = "".join(
+                    b["text"]
+                    for b in msg.content
+                    if isinstance(b, dict) and "text" in b
+                )
+                total += 3 + len(re.findall(r"\w+|\n", combined))
+        return total
+
+    # 3 blocks ensure k=2 evaluates candidate blocks in reverse order under pre-fix
+    # logic: reversed ["c", "b\n"] -> "cb\n" costs 5 <= 5, returned forward
+    # ["b\n", "c"] -> "b\nc" costs 6 > 5.
+    msg = HumanMessage(
+        content=[
+            {"type": "text", "text": "a\n"},
+            {"type": "text", "text": "b\n"},
+            {"type": "text", "text": "c"},
+        ]
+    )
+    actual = trim_messages(
+        [msg],
+        max_tokens=5,
+        token_counter=block_counter,
+        strategy="last",
+        allow_partial=True,
+    )
+    assert len(actual) == 1
+    assert actual[0].content == [{"type": "text", "text": "c"}]
+    assert block_counter(actual) <= 5
+
+
 def test_trim_messages_allow_partial_text_splitter() -> None:
     expected = [
         HumanMessage("a 4 token text.", id="third"),

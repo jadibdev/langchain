@@ -2026,18 +2026,19 @@ def _first_max_tokens(
         if isinstance(messages[idx].content, list):
             excluded = messages[idx].model_copy(deep=True)
             copied = True
-            num_block = len(excluded.content)
-            if partial_strategy == "last":
-                excluded.content = list(reversed(excluded.content))
-            for _ in range(1, num_block):
-                excluded.content = excluded.content[:-1]
+            original_blocks = list(excluded.content)
+            num_block = len(original_blocks)
+            for k in range(num_block - 1, 0, -1):
+                excluded.content = (
+                    original_blocks[-k:]
+                    if partial_strategy == "last"
+                    else original_blocks[:k]
+                )
                 if token_counter([*messages[:idx], excluded]) <= max_tokens:
                     messages = [*messages[:idx], excluded]
                     idx += 1
                     included_partial = True
                     break
-            if included_partial and partial_strategy == "last":
-                excluded.content = list(reversed(excluded.content))
         if not included_partial:
             if not copied:
                 excluded = messages[idx].model_copy(deep=True)
@@ -2062,8 +2063,6 @@ def _first_max_tokens(
 
                 split_texts = text_splitter(text)
                 base_message_count = token_counter(messages[:idx])
-                if partial_strategy == "last":
-                    split_texts = list(reversed(split_texts))
 
                 # Binary search for the maximum number of splits we can include
                 left, right = 0, len(split_texts)
@@ -2072,16 +2071,23 @@ def _first_max_tokens(
                     if left >= right:
                         break
                     mid = (left + right + 1) // 2
-                    excluded.content = "".join(split_texts[:mid])
+                    candidate_splits = (
+                        split_texts[-mid:]
+                        if partial_strategy == "last"
+                        else split_texts[:mid]
+                    )
+                    excluded.content = "".join(candidate_splits)
                     if base_message_count + token_counter([excluded]) <= max_tokens:
                         left = mid
                     else:
                         right = mid - 1
 
                 if left > 0:
-                    content_splits = split_texts[:left]
-                    if partial_strategy == "last":
-                        content_splits = list(reversed(content_splits))
+                    content_splits = (
+                        split_texts[-left:]
+                        if partial_strategy == "last"
+                        else split_texts[:left]
+                    )
                     excluded.content = "".join(content_splits)
                     messages = [*messages[:idx], excluded]
                     idx += 1
