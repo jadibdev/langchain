@@ -465,14 +465,18 @@ def test_trim_messages_last_allow_partial_one_message() -> None:
 
 
 def test_trim_messages_last_allow_partial_respects_token_budget_order() -> None:
-    # Verifies candidate splits are evaluated in forward order so tokenizers with
-    # order-dependent token counts (e.g. subword/BPE boundary fusion across unpunctuated lines)
-    # never return a message that exceeds max_tokens.
+    # Verifies candidate splits are evaluated in forward order so tokenizers
+    # with order-dependent token counts (e.g. subword/BPE boundary fusion across
+    # unpunctuated lines) never return a message that exceeds max_tokens.
     def word_and_newline_counter(msgs: list[BaseMessage]) -> int:
-        # Order-sensitive like BPE: reversed "cb\n" fuses into ["cb", "\n"] (2 tokens + 3 overhead = 5),
-        # whereas forward "b\nc" tokenizes as ["b", "\n", "c"] (3 tokens + 3 overhead = 6).
+        # Order-sensitive like BPE: reversed "cb\n" fuses into ["cb", "\n"]
+        # (2 tokens + 3 overhead = 5), whereas forward "b\nc" tokenizes as
+        # ["b", "\n", "c"] (3 tokens + 3 overhead = 6).
         return sum(
-            3 + len(re.findall(r"\w+|\n", m.content if isinstance(m.content, str) else ""))
+            3
+            + len(
+                re.findall(r"\w+|\n", m.content if isinstance(m.content, str) else "")
+            )
             for m in msgs
         )
 
@@ -490,7 +494,8 @@ def test_trim_messages_last_allow_partial_respects_token_budget_order() -> None:
 
 
 def test_trim_messages_last_allow_partial_blocks_respects_token_budget_order() -> None:
-    # Verifies candidate content blocks are evaluated in forward order when partial_strategy="last"
+    # Verifies candidate content blocks are evaluated in forward order when
+    # partial_strategy="last"
     def block_counter(msgs: list[BaseMessage]) -> int:
         total = 0
         for msg in msgs:
@@ -503,8 +508,9 @@ def test_trim_messages_last_allow_partial_blocks_respects_token_budget_order() -
                 total += 3 + len(re.findall(r"\w+|\n", combined))
         return total
 
-    # 3 blocks ensure k=2 evaluates candidate blocks in reverse order under pre-fix logic:
-    # reversed ["c", "b\n"] -> "cb\n" costs 5 <= 5, returned forward ["b\n", "c"] -> "b\nc" costs 6 > 5.
+    # 3 blocks ensure k=2 evaluates candidate blocks in reverse order under pre-fix
+    # logic: reversed ["c", "b\n"] -> "cb\n" costs 5 <= 5, returned forward
+    # ["b\n", "c"] -> "b\nc" costs 6 > 5.
     msg = HumanMessage(
         content=[
             {"type": "text", "text": "a\n"},
