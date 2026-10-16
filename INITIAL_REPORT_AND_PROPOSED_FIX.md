@@ -72,7 +72,7 @@ if left > 0:
 1. **Step 1:** To retain the last `mid` lines, `split_texts` is reversed from `['b\n', 'c']` to `['c', 'b\n']`.
 2. **Step 2:** The binary search evaluates `"".join(split_texts[:mid])`. For `mid = 2`, this joins the lines in reverse order:
    $$\text{"c"} + \text{"b\textbackslash n"} = \text{"cb\textbackslash n"}$$
-   In standard text, the final line (`"c"`) lacks a trailing newline. When joined in reverse order, `"c"` and `"b"` collide directly across the boundary. Under our rule-based regression counter (and typical tokenizers where boundary characters merge), `"cb"` is counted as a single token:
+   In standard text, the final line (`"c"`) lacks a trailing newline. When joined in reverse order, `"c"` and `"b"` collide directly across the boundary. While subword tokenizers (e.g. `tiktoken` BPE) exhibit boundary fusion in production, our unit test employs a lightweight regex counter (`re.findall(r"\w+|\n", ...)`) as an explicit test model for boundary fusion (rather than simulating full BPE tokenization tables). Under this test model, `"cb"` fuses into a single token:
    - Measured cost of `"cb\n"`: $3 \text{ overhead} + 2 \text{ tokens} = \mathbf{5\text{ tokens}} \le 5$ (Accepted by binary search, setting `left = 2`).
 3. **Step 3:** The search finishes with `left = 2`. The function calls `reversed(content_splits)` and joins them:
    $$\text{"b\textbackslash n"} + \text{"c"} = \text{"b\textbackslash nc"}$$
@@ -174,7 +174,7 @@ if left > 0:
 Two regression test cases were implemented in [`libs/core/tests/unit_tests/messages/test_utils.py`](file:///C:/Projects/github-portfolio/langchain/libs/core/tests/unit_tests/messages/test_utils.py):
 
 ### Test 1: `test_trim_messages_last_allow_partial_respects_token_budget_order`
-* **Mechanism:** Uses a rule-based regex counter (`re.findall(r"\w+|\n", text) + 3`) to model order-dependent subword token fusion.
+* **Mechanism:** Uses a rule-based regex counter (`re.findall(r"\w+|\n", text) + 3`) as a deterministic test model for boundary fusion (simulating order-dependent token counts without introducing external tokenizer dependencies).
 * **Input:** `HumanMessage("a\nb\nc")`, `max_tokens=5`.
 * **Behavior:**
   - **Pre-fix:** Evaluated reversed `'cb\n'` (cost 5 $\le 5$), accepted `left = 2`, returned `'b\nc'` (cost 6 $> 5$) $\rightarrow$ **FAILED (Exceeded budget)**.
