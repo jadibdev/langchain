@@ -464,6 +464,74 @@ def test_trim_messages_last_allow_partial_one_message() -> None:
     assert _MESSAGES_TO_TRIM == _MESSAGES_TO_TRIM_COPY
 
 
+def test_trim_messages_last_allow_partial_respects_token_budget_order() -> None:
+    # Verifies candidate splits are evaluated in forward order so tokenizers with
+    # order-dependent token counts (e.g. BPE token fusion when trailing lines lack newlines)
+    # never return a message that exceeds max_tokens.
+    def order_sensitive_counter(msgs: list[BaseMessage]) -> int:
+        total = 0
+        for msg in msgs:
+            text = msg.content if isinstance(msg.content, str) else ""
+            if "gf\n" in text:
+                total += 4
+            elif "f\ng" in text:
+                total += 6
+            elif "g" in text:
+                total += 3
+            elif "f\n" in text:
+                total += 3
+            else:
+                total += len(text.splitlines()) * 3
+        return total
+
+    text = "d\ne\nf\ng"
+    actual = trim_messages(
+        [HumanMessage(text)],
+        max_tokens=5,
+        token_counter=order_sensitive_counter,
+        strategy="last",
+        allow_partial=True,
+        text_splitter=lambda t: t.splitlines(keepends=True),
+    )
+    assert len(actual) == 1
+    assert actual[0].content == "g"
+    assert order_sensitive_counter(actual) <= 5
+
+
+def test_trim_messages_last_allow_partial_blocks_respects_token_budget_order() -> None:
+    # Verifies candidate content blocks are evaluated in forward order when partial_strategy="last"
+    def block_counter(msgs: list[BaseMessage]) -> int:
+        total = 0
+        for msg in msgs:
+            if isinstance(msg.content, list):
+                combined = "".join(
+                    b["text"] for b in msg.content if isinstance(b, dict) and "text" in b
+                )
+                if combined == "b2b1":
+                    total += 4
+                elif combined == "b1b2":
+                    total += 6
+                elif combined == "b2":
+                    total += 3
+                else:
+                    total += len(msg.content) * 3
+        return total
+
+    msg = HumanMessage(
+        content=[{"type": "text", "text": "b1"}, {"type": "text", "text": "b2"}]
+    )
+    actual = trim_messages(
+        [msg],
+        max_tokens=5,
+        token_counter=block_counter,
+        strategy="last",
+        allow_partial=True,
+    )
+    assert len(actual) == 1
+    assert actual[0].content == [{"type": "text", "text": "b2"}]
+    assert block_counter(actual) <= 5
+
+
 def test_trim_messages_allow_partial_text_splitter() -> None:
     expected = [
         HumanMessage("a 4 token text.", id="third"),
