@@ -3,6 +3,7 @@ import json
 import math
 import re
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import Any, TypedDict
 
 import pytest
@@ -751,6 +752,185 @@ def test_trim_messages_token_counter_shortcut_with_options() -> None:
     assert isinstance(result[0], SystemMessage)
     assert any(isinstance(msg, HumanMessage) for msg in result[1:])
     assert messages == messages_copy
+
+
+def test_trim_messages_last_with_tools_overhead() -> None:
+    """Test that trim_messages does not double-count request-level tool overhead."""
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup_order",
+            "description": "Look up an order by ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {"order_id": {"type": "string"}},
+                "required": ["order_id"],
+            },
+        },
+    }
+    counter = partial(count_tokens_approximately, tools=[tool])
+    messages = [
+        SystemMessage("You are helpful."),
+        HumanMessage("Where is order 123?"),
+    ]
+    budget = counter(messages)
+    trimmed = trim_messages(
+        messages,
+        max_tokens=budget,
+        token_counter=counter,
+        include_system=True,
+        start_on="human",
+    )
+    assert trimmed == messages
+
+
+def test_trim_messages_synthetic_fixed_overhead() -> None:
+    """Test trim_messages with a synthetic non-additive token counter."""
+
+    def non_additive_counter(msgs: list[BaseMessage]) -> int:
+        if not msgs:
+            return 0
+        return 50 + 10 * len(msgs)
+
+    messages = [
+        SystemMessage("System prompt"),
+        HumanMessage("First message"),
+        AIMessage("Second message"),
+    ]
+    # Budget allows System + 1 message = 50 + 20 = 70 tokens
+    # If overhead was double-counted (50 for system + 50 for message), 100 > 70
+    result = trim_messages(
+        messages,
+        max_tokens=70,
+        token_counter=non_additive_counter,
+        strategy="last",
+        include_system=True,
+    )
+    assert result == [messages[0], messages[2]]
+
+
+def test_trim_messages_partial_text_first_with_overhead() -> None:
+    """Test text partial trimming under strategy='first' with tool overhead."""
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "noop",
+            "description": "noop tool",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    counter = partial(count_tokens_approximately, tools=[tool])
+    expected = [HumanMessage("A" * 16)]
+    budget = counter(expected)
+    actual = trim_messages(
+        [HumanMessage("A" * 100)],
+        max_tokens=budget,
+        token_counter=counter,
+        strategy="first",
+        allow_partial=True,
+        text_splitter=list,
+    )
+    assert actual == expected
+
+
+def test_trim_messages_partial_text_last_with_overhead() -> None:
+    """Test text partial trimming under strategy='last' with tool overhead."""
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "noop",
+            "description": "noop tool",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    counter = partial(count_tokens_approximately, tools=[tool])
+    expected = [HumanMessage("A" * 16)]
+    budget = counter(expected)
+    actual = trim_messages(
+        [HumanMessage("A" * 100)],
+        max_tokens=budget,
+        token_counter=counter,
+        strategy="last",
+        allow_partial=True,
+        text_splitter=list,
+    )
+    assert actual == expected
+
+
+def test_trim_messages_system_exceeds_budget_with_overhead() -> None:
+    """Test that include_system=True preserves system message when it exceeds budget."""
+
+    def fixed_overhead_counter(msgs: list[BaseMessage]) -> int:
+        if not msgs:
+            return 0
+        return 50 + 10 * len(msgs)
+
+    messages = [
+        SystemMessage("Long system message"),
+        HumanMessage("User message"),
+    ]
+    # System alone costs 60 tokens, max_tokens is 30
+    result = trim_messages(
+        messages,
+        max_tokens=30,
+        token_counter=fixed_overhead_counter,
+        strategy="last",
+        include_system=True,
+    )
+    assert result == [messages[0]]
+
+
+def test_trim_messages_order_sensitive_counter() -> None:
+    """Test that candidate token counts evaluate messages in chronological order."""
+    order_log: list[list[str]] = []
+
+    def order_tracing_counter(msgs: list[BaseMessage]) -> int:
+        order_log.append([m.content for m in msgs if isinstance(m.content, str)])
+        return 10 * len(msgs)
+
+    messages = [
+        SystemMessage("Sys"),
+        HumanMessage("Msg1"),
+        AIMessage("Msg2"),
+    ]
+    trim_messages(
+        messages,
+        max_tokens=25,
+        token_counter=order_tracing_counter,
+        strategy="last",
+        include_system=True,
+    )
+    # Every candidate with Sys must have Sys first and sub-messages
+    # in chronological order
+    for logged in order_log:
+        if "Sys" in logged:
+            assert logged[0] == "Sys"
+        if "Msg1" in logged and "Msg2" in logged:
+            assert logged.index("Msg1") < logged.index("Msg2")
+
+
+def test_trim_messages_exact_boundary_with_overhead() -> None:
+    """Test that exact boundary fits are preserved when counter has overhead."""
+
+    def overhead_counter(msgs: list[BaseMessage]) -> int:
+        if not msgs:
+            return 0
+        return 100 + sum(len(m.content) for m in msgs if isinstance(m.content, str))
+
+    messages = [
+        SystemMessage("System"),
+        HumanMessage("Hello"),
+        AIMessage("World"),
+    ]
+    exact_budget = overhead_counter(messages)
+    result = trim_messages(
+        messages,
+        max_tokens=exact_budget,
+        token_counter=overhead_counter,
+        strategy="last",
+        include_system=True,
+    )
+    assert result == messages
 
 
 class FakeTokenCountingModel(FakeChatModel):
